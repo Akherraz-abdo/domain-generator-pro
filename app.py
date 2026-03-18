@@ -38,7 +38,7 @@ st.markdown("""
 def generate_names_with_gemini(api_key, subject, style, tld):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash') 
         
         prompt = f"""
         Act as a professional brand naming expert. 
