@@ -1,22 +1,17 @@
 import streamlit as st
+import google.generativeai as genai
 import whois
 import time
 import random
 import re
-import requests
 
-# --- 1. HIGH-END SaaS FRONT END ---
-st.set_page_config(page_title="SubjectGen AI Pro", page_icon="🌐", layout="wide")
+# --- 1. PRO SaaS UI CONFIG ---
+st.set_page_config(page_title="Gemini Domain AI", page_icon="🤖", layout="wide")
 
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-
-    html, body, [class*="st-"] {
-        font-family: 'Plus Jakarta Sans', sans-serif;
-        background-color: #020617;
-        color: #f1f5f9;
-    }
+    html, body, [class*="st-"] { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #020617; color: #f1f5f9; }
     .stApp { background: radial-gradient(circle at top right, #1e1b4b, #020617); }
     
     .domain-card {
@@ -29,41 +24,43 @@ st.markdown("""
         display: flex;
         justify-content: space-between;
         align-items: center;
+        transition: 0.3s;
     }
-    .domain-name { font-size: 1.25rem; font-weight: 800; color: #ffffff; }
+    .domain-card:hover { border-color: #6366f1; transform: translateY(-2px); }
+    .domain-name { font-size: 1.3rem; font-weight: 800; color: #ffffff; }
     .status-badge { background: #064e3b; color: #34d399; padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; }
     .buy-link { background: #6366f1; color: white !important; padding: 10px 24px; border-radius: 12px; text-decoration: none; font-weight: 700; }
-    
-    .main-title { font-size: 3rem; font-weight: 800; background: linear-gradient(to right, #ffffff, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .main-title { font-size: 3.5rem; font-weight: 800; background: linear-gradient(to right, #ffffff, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. RESEARCH ENGINE (WIKIPEDIA API) ---
-def fetch_subject_keywords(subject):
-    """Searches Wikipedia for the subject and extracts top keywords."""
+# --- 2. GEMINI AI SETUP ---
+def generate_names_with_gemini(api_key, subject, style, tld):
     try:
-        # Search for the page
-        search_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={subject}&format=json"
-        search_res = requests.get(search_url).json()
-        if not search_res['query']['search']: return []
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
         
-        # Get the summary of the first result
-        page_title = search_res['query']['search'][0]['title']
-        summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{page_title.replace(' ', '_')}"
-        summary_res = requests.get(summary_url).json()
-        extract = summary_res.get('extract', '')
+        prompt = f"""
+        Act as a professional brand naming expert. 
+        Generate 30 unique, catchy, and brandable domain names for the subject: '{subject}'.
+        Style: {style}.
+        Target Extension: {tld}.
+        Rules:
+        1. Do NOT include the extension {tld} in the names.
+        2. No hyphens or spaces.
+        3. Provide ONLY a comma-separated list of names.
+        4. Focus on short, memorable names.
+        """
         
-        # Extract meaningful words (4-10 letters, no common stop words)
-        words = re.findall(r'\b[a-zA-Z]{4,10}\b', extract.lower())
-        stop_words = {'also', 'from', 'this', 'that', 'with', 'their', 'were', 'which', 'they'}
-        return list(set([w for w in words if w not in stop_words]))
-    except:
+        response = model.generate_content(prompt)
+        # Clean the response and split into a list
+        raw_names = response.text.replace(" ", "").split(",")
+        return [re.sub(r'[^a-zA-Z0-9]', '', name) for name in raw_names]
+    except Exception as e:
+        st.error(f"Gemini API Error: {e}")
         return []
 
-# --- 3. DOMAIN ENGINE ---
-PREFIXES = ["get", "try", "meta", "smart", "cloud", "fast", "easy", "vibe", "zen", "alpha", "pro", "neo"]
-SUFFIXES = ["hub", "ly", "ify", "app", "hq", "lab", "io", "base", "flow", "stack", "pulse", "link"]
-
+# --- 3. DOMAIN CHECKER ---
 def check_domain(domain):
     try:
         w = whois.whois(domain)
@@ -71,72 +68,61 @@ def check_domain(domain):
     except:
         return True
 
-# --- 4. APP LAYOUT ---
-st.markdown('<h1 class="main-title">SubjectGen AI</h1>', unsafe_allow_html=True)
-st.markdown('<p style="color:#94a3b8; font-size:1.1rem;">Enter a subject to research and find available domains instantly.</p>', unsafe_allow_html=True)
+# --- 4. APP INTERFACE ---
+st.markdown('<h1 class="main-title">Gemini Domain AI</h1>', unsafe_allow_html=True)
+st.markdown('<p style="color:#94a3b8; font-size:1.2rem; margin-bottom:2rem;">The Smartest AI-Powered Domain Discovery Tool</p>', unsafe_allow_html=True)
 
+# Sidebar for API Key and Settings
+st.sidebar.title("🔐 Setup")
+gemini_api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+st.sidebar.info("Get a free key at: [aistudio.google.com](https://aistudio.google.com/)")
+
+st.sidebar.markdown("---")
+st.sidebar.title("⚙️ Engine Settings")
+name_style = st.sidebar.selectbox("Brand Style", ["Modern & Techy", "Classic & Professional", "Playful & Creative", "Short & Abstract"])
+scan_limit = st.sidebar.slider("Scan Limit", 5, 30, 15)
+
+# Main Inputs
 col1, col2 = st.columns([2, 1])
-
 with col1:
-    subject = st.text_input("Enter a Topic (e.g. Artificial Intelligence, Coffee, Space)", "")
-    
+    subject_input = st.text_input("Describe your business or project:", placeholder="e.g. A luxury sustainable coffee brand for digital nomads")
 with col2:
-    tld = st.selectbox("Extension", [".com", ".net", ".io", ".ai", ".app", ".org"])
+    tld_input = st.selectbox("Extension", [".com", ".ai", ".io", ".net", ".app", ".org", ".co"])
 
-st.sidebar.markdown("### ⚙️ Engine Settings")
-limit = st.sidebar.slider("Scan Limit", 10, 50, 20)
-auto_research = st.sidebar.toggle("Auto-Research Subject (Wikipedia)", True)
-
-if st.button("🔥 Research & Generate Domains"):
-    if not subject:
-        st.error("Please enter a subject.")
+if st.button("🚀 Generate Smart Domains"):
+    if not gemini_api_key:
+        st.warning("Please enter your Gemini API Key in the sidebar.")
+    elif not subject_input:
+        st.warning("Please describe your project.")
     else:
-        with st.spinner(f"Researching '{subject}' on the web..."):
-            # 1. Start with User Keywords
-            keywords = [subject.lower().replace(" ", "")]
+        with st.spinner("Gemini is brainstorming names..."):
+            names = generate_names_with_gemini(gemini_api_key, subject_input, name_style, tld_input)
             
-            # 2. Add Research Keywords
-            if auto_research:
-                web_keywords = fetch_subject_keywords(subject)
-                keywords.extend(web_keywords)
-                st.info(f"Research found {len(web_keywords)} related terms (e.g., {', '.join(web_keywords[:5])})")
-
-            # 3. Build List
-            candidates = set()
-            for kw in keywords:
-                candidates.add(kw)
-                for p in PREFIXES: candidates.add(f"{p}{kw}")
-                for s in SUFFIXES: candidates.add(f"{kw}{s}")
-                # Cross-keyword combinations
-                if len(keywords) > 1:
-                    partner = random.choice(keywords)
-                    if partner != kw: candidates.add(f"{kw}{partner}")
-
-            raw_list = list(candidates)
-            random.shuffle(raw_list)
-            
-            st.write(f"### 🔎 Scanning for available gems...")
-            
-            progress_bar = st.progress(0)
-            found = 0
-            
-            for i in range(min(len(raw_list), limit)):
-                domain_name = f"{raw_list[i]}{tld}"
-                progress_bar.progress((i + 1) / limit)
+            if names:
+                st.write(f"### 🔎 Checking availability for the best ideas...")
+                progress_bar = st.progress(0)
+                found = 0
                 
-                if check_domain(domain_name):
-                    found += 1
-                    buy_url = f"https://www.namecheap.com/domains/registration/results/?domain={domain_name}"
-                    st.markdown(f"""
-                        <div class="domain-card">
-                            <div>
-                                <span class="domain-name">{domain_name}</span><br>
-                                <span class="status-badge">Available</span>
+                # We limit the check to the user's scan_limit to avoid WHOIS bans
+                for i, name in enumerate(names[:scan_limit]):
+                    full_domain = f"{name.lower()}{tld_input}"
+                    progress_bar.progress((i + 1) / scan_limit)
+                    
+                    if check_domain(full_domain):
+                        found += 1
+                        buy_url = f"https://www.namecheap.com/domains/registration/results/?domain={full_domain}"
+                        st.markdown(f"""
+                            <div class="domain-card">
+                                <div>
+                                    <span class="domain-name">{full_domain}</span><br>
+                                    <span class="status-badge">Available</span>
+                                </div>
+                                <a href="{buy_url}" target="_blank" class="buy-link">Register</a>
                             </div>
-                            <a href="{buy_url}" target="_blank" class="buy-link">Register</a>
-                        </div>
-                    """, unsafe_allow_html=True)
-                time.sleep(0.1)
+                        """, unsafe_allow_html=True)
+                    time.sleep(0.2) # Small delay for stability
 
-            if found == 0:
-                st.warning("No available domains found. Try a different extension or subject.")
+                if found == 0:
+                    st.info("Gemini suggested great names, but they seem to be taken. Try a different 'Style' in the sidebar!")
+                else:
+                    st.success(f"Search complete! Found {found} available brandable domains.")
