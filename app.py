@@ -1,126 +1,148 @@
 import streamlit as st
 import requests
-import time
-from google import genai
-from google.genai import types
+import re
+import pandas as pd
+from collections import Counter
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="KASMI DOMAIN NEWS", page_icon="🌐", layout="wide")
 
 st.markdown("""
     <style>
-    .main { background-color: #f0f2f6; }
-    .stButton>button { background-color: #1E3A8A; color: white; border-radius: 5px; width: 100%; }
-    .api-box { padding: 10px; border-radius: 5px; border: 1px solid #ddd; margin-bottom: 10px; }
+    .main { background-color: #f8f9fa; }
+    .stButton>button { background-color: #007bff; color: white; border-radius: 5px; height: 3em; font-weight: bold;}
+    .keyword-tag { background-color: #e9ecef; padding: 5px 10px; border-radius: 15px; margin: 5px; display: inline-block; }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🌐 KASMI DOMAIN NEWS")
-st.write("Discover Trending Domain Names from Today's News using Multi-API Aggregation.")
+st.subheader("Algorithmic Domain Discovery (No-AI Engine)")
 
-# --- SIDEBAR: API CONFIGURATION ---
+# --- SIDEBAR: API KEYS ---
 with st.sidebar:
-    st.header("🔑 API Keys")
-    st.caption("Register at the links below to get your keys.")
+    st.header("🔑 News API Configuration")
+    st.info("The app will extract keywords from these sources to build domains.")
     
-    # News Sources
-    m_key = st.text_input("MediaStack API Key", value=st.secrets.get("MEDIASTACK_KEY", ""), type="password")
     gn_key = st.text_input("GNews API Key", value=st.secrets.get("GNEWS_KEY", ""), type="password")
     napi_key = st.text_input("NewsAPI.org Key", value=st.secrets.get("NEWSAPI_KEY", ""), type="password")
+    m_key = st.text_input("MediaStack Key", value=st.secrets.get("MEDIASTACK_KEY", ""), type="password")
     curr_key = st.text_input("Currents API Key", value=st.secrets.get("CURRENTS_KEY", ""), type="password")
-    
-    # Gemini (Required for the Brainstorming part)
-    gemini_key = st.text_input("Gemini API Key (Required)", value=st.secrets.get("GEMINI_API_KEY", ""), type="password")
 
-    st.header("⚙️ Generation Settings")
-    tld = st.selectbox("TLD", ["com", "ai", "io", "co", "net", "org"])
-    max_words = st.slider("Max Words", 1, 4, 2)
-    num_domains = st.number_input("Count", 5, 20, 10)
+    st.header("⚙️ Domain Settings")
+    tld = st.selectbox("Extension", ["com", "ai", "io", "co", "net", "org"])
+    max_words = st.slider("Words per Domain", 1, 3, 2)
+    min_word_length = st.slider("Minimum Keyword Length", 3, 6, 4)
 
-# --- NEWS FETCHING LOGIC ---
-def get_all_news():
-    headlines = []
+# --- NEWS FETCHING ENGINE ---
+def fetch_all_headlines():
+    all_text = ""
+    sources_count = 0
     
     # 1. GNews
     if gn_key:
         try:
-            res = requests.get(f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gn_key}", timeout=5).json()
-            headlines.extend([a['title'] for a in res.get('articles', [])])
-        except: st.warning("GNews failed to connect.")
+            r = requests.get(f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gn_key}", timeout=5).json()
+            all_text += " ".join([a['title'] for a in r.get('articles', [])])
+            sources_count += 1
+        except: pass
 
-    # 2. NewsAPI.org
+    # 2. NewsAPI
     if napi_key:
         try:
-            res = requests.get(f"https://newsapi.org/v2/top-headlines?category=technology&language=en&apiKey={napi_key}", timeout=5).json()
-            headlines.extend([a['title'] for a in res.get('articles', [])])
-        except: st.warning("NewsAPI failed to connect.")
+            r = requests.get(f"https://newsapi.org/v2/top-headlines?category=technology&language=en&apiKey={napi_key}", timeout=5).json()
+            all_text += " ".join([a['title'] for a in r.get('articles', [])])
+            sources_count += 1
+        except: pass
 
     # 3. MediaStack
     if m_key:
         try:
-            res = requests.get(f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en&categories=technology", timeout=5).json()
-            headlines.extend([a['title'] for a in res.get('data', [])])
-        except: st.warning("MediaStack failed to connect.")
+            r = requests.get(f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en&categories=technology", timeout=5).json()
+            all_text += " ".join([a['title'] for a in r.get('data', [])])
+            sources_count += 1
+        except: pass
 
     # 4. Currents
     if curr_key:
         try:
             headers = {'Authorization': curr_key}
-            res = requests.get("https://api.currentsapi.services/v1/latest-news?language=en&category=technology", headers=headers, timeout=5).json()
-            headlines.extend([a['title'] for a in res.get('news', [])])
-        except: st.warning("Currents API failed to connect.")
+            r = requests.get("https://api.currentsapi.services/v1/latest-news?language=en&category=technology", headers=headers, timeout=5).json()
+            all_text += " ".join([a['title'] for a in r.get('news', [])])
+            sources_count += 1
+        except: pass
 
-    return list(set(headlines)) # Remove duplicates
+    return all_text.lower(), sources_count
 
-# --- DOMAIN GENERATION ---
-def brainstorm_domains(news_list):
-    if not gemini_key:
-        return "Please provide a Gemini Key to generate reasoning."
+# --- KEYWORD EXTRACTION LOGIC (The "Brain") ---
+def extract_trending_keywords(text):
+    # Remove punctuation and numbers
+    words = re.findall(r'\b[a-z]{' + str(min_word_length) + r',}\b', text)
     
-    # We use a very stable model string to avoid 404
-    client = genai.Client(api_key=gemini_key)
-    model_name = "gemini-1.5-flash" # High quota, very stable
+    # Stopwords (Words to ignore)
+    stop_words = {
+        'the', 'and', 'with', 'from', 'that', 'this', 'news', 'today', 'latest', 
+        'will', 'says', 'how', 'why', 'top', 'best', 'new', 'for', 'about', 'video'
+    }
     
-    prompt = f"""
-    Based on these headlines: {str(news_list[:15])}
-    Suggest {num_domains} brandable domains ending in .{tld}.
-    Max {max_words} words. 
-    Provide a table with: Domain Name | AI Reasoning | Market Potential (1-10)
-    """
-    
-    try:
-        response = client.models.generate_content(model=model_name, contents=prompt)
-        return response.text
-    except Exception as e:
-        if "429" in str(e):
-            return "❌ AI Quota Full. I found the news but can't brainstorm right now. Please wait 60 seconds."
-        return f"❌ AI Error: {e}"
+    filtered_words = [w for w in words if w not in stop_words]
+    return Counter(filtered_words).most_common(30)
 
-# --- MAIN UI ---
-if st.button("Generate Domains from News"):
-    if not any([m_key, gn_key, napi_key, curr_key]):
-        st.error("Please provide at least one News API Key in the sidebar.")
-    elif not gemini_key:
-        st.error("Gemini Key is required for the Brainstorming step.")
+# --- MAIN APP LOGIC ---
+if st.button("🚀 Scrape News & Generate Domains"):
+    if not any([gn_key, napi_key, m_key, curr_key]):
+        st.error("Please provide at least one API Key in the sidebar.")
     else:
-        with st.status("Aggregating News Sources...", expanded=True) as status:
-            st.write("📡 Connecting to News APIs...")
-            news = get_all_news()
+        with st.spinner("Scanning Global News Sources..."):
+            raw_text, count = fetch_all_headlines()
             
-            if not news:
-                st.error("No news found. Check your API keys or internet connection.")
+            if not raw_text:
+                st.error("Could not fetch news. Check your API keys.")
             else:
-                st.write(f"✅ Found {len(news)} trending topics.")
-                st.write("🧠 AI is brainstorming domains...")
-                results = brainstorm_domains(news)
-                status.update(label="Complete!", state="complete")
+                st.success(f"Successfully aggregated news from {count} sources.")
                 
-                st.success("### Suggested Domain Names")
-                st.markdown(results)
+                # Extract Keywords
+                top_keywords = extract_trending_keywords(raw_text)
                 
-                with st.expander("See Raw News Headlines Used"):
-                    for h in news:
-                        st.write(f"• {h}")
+                # Display Keywords found
+                st.write("### 🔥 Trending Keywords Found:")
+                kw_cols = st.columns(5)
+                for i, (word, freq) in enumerate(top_keywords[:15]):
+                    kw_cols[i % 5].markdown(f"<span class='keyword-tag'>{word} ({freq})</span>", unsafe_allow_html=True)
+
+                # Generate Domain Names
+                st.write("### 💎 Suggested Domain Portfolio")
+                
+                domains = []
+                words_only = [k[0] for k in top_keywords]
+                
+                # Combination Logic
+                for i in range(len(words_only) - 1):
+                    # Single word domain
+                    domains.append({
+                        "Domain Name": f"{words_only[i]}.{tld}",
+                        "Type": "Premium Keyword",
+                        "Source Keyword": words_only[i].capitalize()
+                    })
+                    
+                    # Double word domain
+                    if max_words >= 2:
+                        domains.append({
+                            "Domain Name": f"{words_only[i]}{words_only[i+1]}.{tld}",
+                            "Type": "Brandable Combo",
+                            "Source Keyword": f"{words_only[i]} + {words_only[i+1]}"
+                        })
+                    
+                    # Industry focused (Keyword + AI / Keyword + Tech)
+                    if tld != 'ai':
+                        domains.append({
+                            "Domain Name": f"{words_only[i]}ai.{tld}",
+                            "Type": "Trend Pivot",
+                            "Source Keyword": f"{words_only[i]} + AI"
+                        })
+
+                # Display in a clean Table
+                df = pd.DataFrame(domains).head(20)
+                st.table(df)
 
 st.divider()
-st.caption("KASMI DOMAIN NEWS - Built for GitHub & Streamlit")
+st.caption("KASMI DOMAIN NEWS - Algorithmic Discovery Version | Created by Youness KASMI")
