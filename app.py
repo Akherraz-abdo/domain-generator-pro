@@ -1,148 +1,125 @@
 import streamlit as st
 import requests
 import re
+import xml.etree.ElementTree as ET
 import pandas as pd
 from collections import Counter
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="KASMI DOMAIN NEWS", page_icon="🌐", layout="wide")
+st.set_page_config(page_title="KASMI DOMAIN CHECKER", page_icon="🔍", layout="wide")
 
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    .stButton>button { background-color: #007bff; color: white; border-radius: 5px; height: 3em; font-weight: bold;}
-    .keyword-tag { background-color: #e9ecef; padding: 5px 10px; border-radius: 15px; margin: 5px; display: inline-block; }
+    .main { background-color: #f4f7f6; }
+    .stButton>button { background-color: #ff6600; color: white; border-radius: 5px; height: 3em; font-weight: bold; width: 100%;}
+    .available-card { border-left: 5px solid #28a745; padding: 15px; background: white; margin-bottom: 10px; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🌐 KASMI DOMAIN NEWS")
-st.subheader("Algorithmic Domain Discovery (No-AI Engine)")
+st.title("🌐 KASMI DOMAIN NEWS & CHECKER")
+st.write("Fetching live news trends and verifying Namecheap availability...")
 
 # --- SIDEBAR: API KEYS ---
 with st.sidebar:
-    st.header("🔑 News API Configuration")
-    st.info("The app will extract keywords from these sources to build domains.")
+    st.header("🔑 Namecheap Credentials")
+    nc_user = st.text_input("Namecheap Username", value=st.secrets.get("NC_USER", ""))
+    nc_api_key = st.text_input("Namecheap API Key", value=st.secrets.get("NC_API_KEY", ""), type="password")
+    nc_ip = st.text_input("Your Whitelisted IP", value=st.secrets.get("NC_IP", ""), help="The IP address you whitelisted in Namecheap settings.")
+    use_sandbox = st.checkbox("Use Sandbox Mode", value=True, help="Test with Namecheap's Sandbox (requires separate sandbox account/key)")
     
-    gn_key = st.text_input("GNews API Key", value=st.secrets.get("GNEWS_KEY", ""), type="password")
-    napi_key = st.text_input("NewsAPI.org Key", value=st.secrets.get("NEWSAPI_KEY", ""), type="password")
-    m_key = st.text_input("MediaStack Key", value=st.secrets.get("MEDIASTACK_KEY", ""), type="password")
-    curr_key = st.text_input("Currents API Key", value=st.secrets.get("CURRENTS_KEY", ""), type="password")
+    st.divider()
+    st.header("⚙️ News Settings")
+    gn_key = st.text_input("GNews Key (Optional)", value=st.secrets.get("GNEWS_KEY", ""), type="password")
+    tld = st.selectbox("Extension", ["com", "ai", "io", "net", "org"])
 
-    st.header("⚙️ Domain Settings")
-    tld = st.selectbox("Extension", ["com", "ai", "io", "co", "net", "org"])
-    max_words = st.slider("Words per Domain", 1, 3, 2)
-    min_word_length = st.slider("Minimum Keyword Length", 3, 6, 4)
-
-# --- NEWS FETCHING ENGINE ---
-def fetch_all_headlines():
-    all_text = ""
-    sources_count = 0
+# --- NAMECHEAP AVAILABILITY CHECKER ---
+def check_availability(domain_list):
+    """Checks a list of domains against Namecheap API (Batch mode)."""
+    base_url = "https://api.sandbox.namecheap.com/xml.response" if use_sandbox else "https://api.namecheap.com/xml.response"
     
-    # 1. GNews
+    params = {
+        "ApiUser": nc_user,
+        "ApiKey": nc_api_key,
+        "UserName": nc_user,
+        "Command": "namecheap.domains.check",
+        "ClientIp": nc_ip,
+        "DomainList": ",".join(domain_list)
+    }
+
+    try:
+        response = requests.get(base_url, params=params)
+        root = ET.fromstring(response.content)
+        
+        # Namecheap uses XML namespaces
+        ns = {'ns': 'http://api.namecheap.com/xml.response'}
+        results = root.findall('.//ns:DomainCheckResult', ns)
+        
+        available_domains = []
+        for res in results:
+            if res.attrib.get('Available') == 'true':
+                available_domains.append({
+                    "Domain": res.attrib.get('Domain'),
+                    "Price": res.attrib.get('PremiumRegistrationPrice', 'Standard')
+                })
+        return available_domains
+    except Exception as e:
+        st.error(f"Namecheap API Error: {e}")
+        return []
+
+# --- NEWS & KEYWORD LOGIC ---
+def get_news_keywords():
+    headlines = ""
     if gn_key:
         try:
-            r = requests.get(f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gn_key}", timeout=5).json()
-            all_text += " ".join([a['title'] for a in r.get('articles', [])])
-            sources_count += 1
+            r = requests.get(f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gn_key}").json()
+            headlines = " ".join([a['title'] for a in r.get('articles', [])])
         except: pass
-
-    # 2. NewsAPI
-    if napi_key:
-        try:
-            r = requests.get(f"https://newsapi.org/v2/top-headlines?category=technology&language=en&apiKey={napi_key}", timeout=5).json()
-            all_text += " ".join([a['title'] for a in r.get('articles', [])])
-            sources_count += 1
-        except: pass
-
-    # 3. MediaStack
-    if m_key:
-        try:
-            r = requests.get(f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en&categories=technology", timeout=5).json()
-            all_text += " ".join([a['title'] for a in r.get('data', [])])
-            sources_count += 1
-        except: pass
-
-    # 4. Currents
-    if curr_key:
-        try:
-            headers = {'Authorization': curr_key}
-            r = requests.get("https://api.currentsapi.services/v1/latest-news?language=en&category=technology", headers=headers, timeout=5).json()
-            all_text += " ".join([a['title'] for a in r.get('news', [])])
-            sources_count += 1
-        except: pass
-
-    return all_text.lower(), sources_count
-
-# --- KEYWORD EXTRACTION LOGIC (The "Brain") ---
-def extract_trending_keywords(text):
-    # Remove punctuation and numbers
-    words = re.findall(r'\b[a-z]{' + str(min_word_length) + r',}\b', text)
     
-    # Stopwords (Words to ignore)
-    stop_words = {
-        'the', 'and', 'with', 'from', 'that', 'this', 'news', 'today', 'latest', 
-        'will', 'says', 'how', 'why', 'top', 'best', 'new', 'for', 'about', 'video'
-    }
-    
-    filtered_words = [w for w in words if w not in stop_words]
-    return Counter(filtered_words).most_common(30)
+    if not headlines:
+        return ["tech", "cloud", "data", "smart", "bio", "green"] # Fallback
 
-# --- MAIN APP LOGIC ---
-if st.button("🚀 Scrape News & Generate Domains"):
-    if not any([gn_key, napi_key, m_key, curr_key]):
-        st.error("Please provide at least one API Key in the sidebar.")
+    words = re.findall(r'\b[a-z]{4,}\b', headlines.lower())
+    stop_words = {'today', 'latest', 'news', 'with', 'from', 'that', 'this'}
+    filtered = [w for w in words if w not in stop_words]
+    return [item[0] for item in Counter(filtered).most_common(15)]
+
+# --- MAIN LOGIC ---
+if st.button("🚀 Find & Verify Available Domains"):
+    if not nc_user or not nc_api_key or not nc_ip:
+        st.error("❌ Namecheap Username, API Key, and Whitelisted IP are required.")
     else:
-        with st.spinner("Scanning Global News Sources..."):
-            raw_text, count = fetch_all_headlines()
+        with st.status("Analyzing Market Trends...", expanded=True) as status:
+            # 1. Get Keywords from News
+            st.write("📰 Scraping latest news...")
+            keywords = get_news_keywords()
             
-            if not raw_text:
-                st.error("Could not fetch news. Check your API keys.")
-            else:
-                st.success(f"Successfully aggregated news from {count} sources.")
-                
-                # Extract Keywords
-                top_keywords = extract_trending_keywords(raw_text)
-                
-                # Display Keywords found
-                st.write("### 🔥 Trending Keywords Found:")
-                kw_cols = st.columns(5)
-                for i, (word, freq) in enumerate(top_keywords[:15]):
-                    kw_cols[i % 5].markdown(f"<span class='keyword-tag'>{word} ({freq})</span>", unsafe_allow_html=True)
+            # 2. Generate Candidate List
+            st.write("💡 Brainstorming domains...")
+            candidates = []
+            for i in range(len(keywords) - 1):
+                candidates.append(f"{keywords[i]}.{tld}")
+                candidates.append(f"{keywords[i]}{keywords[i+1]}.{tld}")
+            
+            # 3. Check Namecheap (Batch check to save time)
+            st.write(f"🔎 Verifying {len(candidates)} domains on Namecheap...")
+            available = check_availability(candidates[:50]) # API limit is 50 per call
+            
+            status.update(label="Scanning Finished!", state="complete")
 
-                # Generate Domain Names
-                st.write("### 💎 Suggested Domain Portfolio")
-                
-                domains = []
-                words_only = [k[0] for k in top_keywords]
-                
-                # Combination Logic
-                for i in range(len(words_only) - 1):
-                    # Single word domain
-                    domains.append({
-                        "Domain Name": f"{words_only[i]}.{tld}",
-                        "Type": "Premium Keyword",
-                        "Source Keyword": words_only[i].capitalize()
-                    })
-                    
-                    # Double word domain
-                    if max_words >= 2:
-                        domains.append({
-                            "Domain Name": f"{words_only[i]}{words_only[i+1]}.{tld}",
-                            "Type": "Brandable Combo",
-                            "Source Keyword": f"{words_only[i]} + {words_only[i+1]}"
-                        })
-                    
-                    # Industry focused (Keyword + AI / Keyword + Tech)
-                    if tld != 'ai':
-                        domains.append({
-                            "Domain Name": f"{words_only[i]}ai.{tld}",
-                            "Type": "Trend Pivot",
-                            "Source Keyword": f"{words_only[i]} + AI"
-                        })
-
-                # Display in a clean Table
-                df = pd.DataFrame(domains).head(20)
-                st.table(df)
+        # --- OUTPUT ONLY AVAILABLE ---
+        if available:
+            st.success(f"✅ Found {len(available)} available domains!")
+            for item in available:
+                with st.container():
+                    st.markdown(f"""
+                    <div class="available-card">
+                        <h3>{item['Domain']}</h3>
+                        <p>Status: <b>Available</b> | Price: {item['Price']}</p>
+                        <a href="https://www.namecheap.com/domains/registration-results/?domain={item['Domain']}" target="_blank">Register on Namecheap →</a>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.warning("No available domains found from this news cycle. Try a different TLD.")
 
 st.divider()
-st.caption("KASMI DOMAIN NEWS - Algorithmic Discovery Version | Created by Youness KASMI")
+st.caption("KASMI DOMAIN NEWS - Namecheap Verified | Ensure your IP is whitelisted in Namecheap Dashboard.")
