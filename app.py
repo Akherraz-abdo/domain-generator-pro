@@ -1,47 +1,49 @@
 import streamlit as st
 import requests
 import re
-import xml.etree.ElementTree as ET
+import whois
+import socket
 import pandas as pd
 from collections import Counter
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="KASMI DOMAIN NEWS & VERIFIER", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="KASMI DOMAIN NEWS", page_icon="🌐", layout="wide")
 
-# Custom Styling
 st.markdown("""
     <style>
-    .main { background-color: #f4f7f6; }
-    .stButton>button { background-color: #ff6600; color: white; border-radius: 8px; font-weight: bold; width: 100%; height: 3em; }
-    .available-box { border: 2px solid #28a745; padding: 20px; border-radius: 10px; background-color: white; margin-bottom: 15px; }
-    .domain-name { color: #28a745; font-size: 24px; font-weight: bold; }
+    .main { background-color: #f8f9fa; }
+    .stButton>button { background-color: #2ecc71; color: white; border-radius: 8px; font-weight: bold; height: 3em; }
+    .available-card { 
+        background-color: white; 
+        padding: 20px; 
+        border-radius: 10px; 
+        border-left: 8px solid #2ecc71;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 15px;
+    }
+    .domain-text { font-size: 22px; color: #2ecc71; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🌐 KASMI DOMAIN NEWS + VERIFIER")
-st.subheader("Extract Trends from Global News & Check Namecheap Availability")
+st.title("🌐 KASMI DOMAIN NEWS & FREE VERIFIER")
+st.write("Trending News Aggregator + Built-in WHOIS Availability Checker (No API Required)")
 
-# --- SIDEBAR: ALL API KEYS ---
+# --- SIDEBAR: NEWS API KEYS ---
 with st.sidebar:
-    st.header("🔑 News Sources")
+    st.header("🔑 News API Keys")
     gn_key = st.text_input("GNews Key", value=st.secrets.get("GNEWS_KEY", ""), type="password")
     napi_key = st.text_input("NewsAPI Key", value=st.secrets.get("NEWSAPI_KEY", ""), type="password")
     m_key = st.text_input("MediaStack Key", value=st.secrets.get("MEDIASTACK_KEY", ""), type="password")
     curr_key = st.text_input("Currents Key", value=st.secrets.get("CURRENTS_KEY", ""), type="password")
 
-    st.header("🛒 Namecheap Verifier")
-    nc_user = st.text_input("Namecheap Username", value=st.secrets.get("NC_USER", ""))
-    nc_api_key = st.text_input("Namecheap API Key", value=st.secrets.get("NC_API_KEY", ""), type="password")
-    nc_ip = st.text_input("Your Whitelisted IP", value=st.secrets.get("NC_IP", ""))
-    
-    st.header("⚙️ Settings")
-    tld = st.selectbox("Extension", ["com", "ai", "io", "net", "org", "co"])
-    depth = st.slider("Keyword Count", 5, 20, 10)
+    st.header("⚙️ Domain Settings")
+    tld = st.selectbox("Extension", ["com", "ai", "io", "net", "org", "biz"])
+    max_checks = st.slider("Max Availability Checks", 5, 20, 10, help="WHOIS checking takes time, keep this low for speed.")
 
-# --- FUNCTION: FETCH NEWS FROM ALL 4 SOURCES ---
-def fetch_aggregated_news():
+# --- NEWS AGGREGATOR ---
+def fetch_news():
     headlines = []
-    
+    # Try all 4 sources
     if gn_key:
         try:
             r = requests.get(f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gn_key}", timeout=5).json()
@@ -54,7 +56,7 @@ def fetch_aggregated_news():
         except: pass
     if m_key:
         try:
-            r = requests.get(f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en&categories=technology", timeout=5).json()
+            r = requests.get(f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en", timeout=5).json()
             headlines.extend([a['title'] for a in r.get('data', [])])
         except: pass
     if curr_key:
@@ -63,103 +65,86 @@ def fetch_aggregated_news():
             r = requests.get("https://api.currentsapi.services/v1/latest-news?language=en&category=technology", headers=headers, timeout=5).json()
             headlines.extend([a['title'] for a in r.get('news', [])])
         except: pass
-
     return list(set(headlines))
 
-# --- FUNCTION: GENERATE DOMAIN CANDIDATES ---
-def get_candidates(headlines):
+# --- DOMAIN AVAILABILITY LOGIC (No API Key Needed) ---
+def is_domain_available(domain):
+    """
+    Checks availability using DNS resolution + WHOIS lookup.
+    No API Key required.
+    """
+    # Step 1: DNS Check (Very fast)
+    try:
+        socket.gethostbyname(domain)
+        return False # If it resolves to an IP, it's taken.
+    except socket.gaierror:
+        # Step 2: WHOIS Check (Double check if DNS fails)
+        try:
+            w = whois.whois(domain)
+            # If WHOIS has no registrar or creation date, it's likely available
+            if not w.registrar and not w.creation_date:
+                return True
+            return False
+        except Exception:
+            # If WHOIS errors out, it's often because the domain doesn't exist
+            return True
+
+# --- KEYWORD & CANDIDATE GENERATION ---
+def get_domain_candidates(headlines):
     text = " ".join(headlines).lower()
     words = re.findall(r'\b[a-z]{4,}\b', text)
-    stop_words = {'today', 'latest', 'news', 'with', 'from', 'that', 'this', 'will', 'says'}
+    stop_words = {'today', 'latest', 'news', 'with', 'from', 'that', 'this', 'says'}
     keywords = [w for w in words if w not in stop_words]
-    top_keywords = [item[0] for item in Counter(keywords).most_common(depth)]
+    top = [item[0] for item in Counter(keywords).most_common(max_checks)]
     
+    # Create combinations
     candidates = []
-    for i in range(len(top_keywords)):
-        # Strategy 1: The Keyword itself
-        candidates.append(f"{top_keywords[i]}.{tld}")
-        # Strategy 2: Pair with next keyword
-        if i < len(top_keywords) - 1:
-            candidates.append(f"{top_keywords[i]}{top_keywords[i+1]}.{tld}")
-        # Strategy 3: Trend suffix
-        candidates.append(f"{top_keywords[i]}flow.{tld}")
-        candidates.append(f"{top_keywords[i]}hub.{tld}")
-    
+    for i in range(len(top)):
+        candidates.append(f"{top[i]}.{tld}") # Single word
+        if i < len(top) - 1:
+            candidates.append(f"{top[i]}{top[i+1]}.{tld}") # Combo
     return list(set(candidates))
 
-# --- FUNCTION: NAMECHEAP VERIFIER ---
-def check_namecheap(domain_list):
-    if not nc_user or not nc_api_key:
-        st.error("Namecheap credentials missing!")
-        return []
-
-    # Using Sandbox for safety by default, change to api.namecheap.com for production
-    url = "https://api.namecheap.com/xml.response" 
-    params = {
-        "ApiUser": nc_user,
-        "ApiKey": nc_api_key,
-        "UserName": nc_user,
-        "Command": "namecheap.domains.check",
-        "ClientIp": nc_ip,
-        "DomainList": ",".join(domain_list[:50]) # Namecheap limit is 50
-    }
-
-    try:
-        response = requests.get(url, params=params)
-        root = ET.fromstring(response.content)
-        ns = {'ns': 'http://api.namecheap.com/xml.response'}
-        
-        results = root.findall('.//ns:DomainCheckResult', ns)
-        available = []
-        for res in results:
-            if res.attrib.get('Available') == 'true':
-                available.append(res.attrib.get('Domain'))
-        return available
-    except Exception as e:
-        st.error(f"Check failed: {e}")
-        return []
-
-# --- MAIN APP INTERFACE ---
-if st.button("🔍 SCAN NEWS & CHECK AVAILABILITY"):
+# --- MAIN UI ---
+if st.button("🚀 SCAN NEWS & FIND AVAILABLE DOMAINS"):
     if not any([gn_key, napi_key, m_key, curr_key]):
-        st.warning("Please provide at least one News API Key.")
-    elif not nc_api_key:
-        st.warning("Namecheap API Key is required to filter results.")
+        st.error("Please enter at least one News API Key in the sidebar.")
     else:
-        with st.status("Initializing Systems...", expanded=True) as status:
-            # Step 1: Fetch News
-            st.write("📡 Aggregating news from 4 sources...")
-            news = fetch_aggregated_news()
+        with st.status("Searching the Web...", expanded=True) as status:
+            st.write("📡 Fetching news from 4 sources...")
+            news_list = fetch_news()
             
-            if not news:
-                st.error("No news found. Check your API Keys.")
-                status.update(label="Failed", state="error")
+            if not news_list:
+                st.error("Could not fetch news headlines.")
             else:
-                st.write(f"✅ Found {len(news)} headlines.")
+                st.write(f"✅ Found {len(news_list)} headlines.")
+                candidates = get_domain_candidates(news_list)
                 
-                # Step 2: Generate Candidates
-                st.write("💡 Brainstorming domain combinations...")
-                candidates = get_candidates(news)
+                st.write(f"🔎 Verifying {len(candidates[:max_checks])} domains via WHOIS...")
+                available_domains = []
                 
-                # Step 3: Namecheap Verification
-                st.write(f"🔎 Checking {len(candidates)} domains on Namecheap...")
-                available_only = check_namecheap(candidates)
+                # Progress Bar for checking
+                progress_bar = st.progress(0)
+                for i, d in enumerate(candidates[:max_checks]):
+                    if is_domain_available(d):
+                        available_domains.append(d)
+                    progress_bar.progress((i + 1) / max_checks)
                 
-                status.update(label="Scan Complete!", state="complete")
+                status.update(label="Scanning Complete!", state="complete")
 
-                # Step 4: Display ONLY Available
-                if available_only:
-                    st.success(f"🚀 Found {len(available_only)} Available Domains!")
-                    for d in available_only:
+                # --- RESULTS DISPLAY ---
+                if available_domains:
+                    st.success(f"💎 Found {len(available_domains)} Available Domains!")
+                    for d in available_domains:
                         st.markdown(f"""
-                        <div class="available-box">
-                            <div class="domain-name">{d}</div>
-                            <p>Status: <b>AVAILABLE</b></p>
+                        <div class="available-card">
+                            <span class="domain-text">{d}</span><br>
+                            <small>✅ Available for registration</small><br><br>
                             <a href="https://www.namecheap.com/domains/registration-results/?domain={d}" target="_blank">Register Now →</a>
                         </div>
                         """, unsafe_allow_html=True)
                 else:
-                    st.error("Zero available domains found. All trending keywords are currently taken.")
+                    st.warning("No available domains found. Trending keywords are highly competitive today.")
 
 st.divider()
-st.caption("KASMI DOMAIN NEWS - Integrated Verifier | No AI Required | 2026 Edition")
+st.caption("KASMI DOMAIN NEWS - WHOIS Verifier Edition | No API required for checking.")
