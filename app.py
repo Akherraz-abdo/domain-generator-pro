@@ -1,74 +1,115 @@
 import streamlit as st
-import os
+import requests
+import pandas as pd
 from google import genai
 from google.genai import types
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Gemini 2026 AI", page_icon="🤖", layout="wide")
-st.title("🚀 Gemini Power Bot 2026")
+st.set_page_config(page_title="KASMI DOMAIN NEWS", page_icon="🌐", layout="wide")
 
-# --- 1. SECURE API KEY SETUP ---
-# On Streamlit Cloud, set this in: Settings > Secrets
-api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+# Custom CSS to match your branding
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    h1 { color: #1E3A8A; font-family: 'Arial'; }
+    .stButton>button { background-color: #1E3A8A; color: white; width: 100%; }
+    </style>
+    """, unsafe_allow_html=True)
 
-if not api_key:
-    st.error("❌ GEMINI_API_KEY not found! Go to Streamlit Cloud Settings > Secrets and add it.")
-    st.stop()
+st.title("🚀 KASMI DOMAIN NEWS")
+st.subheader("Discover Trending Domain Names from Today's News")
 
-# --- 2. INITIALIZE CLIENT & SESSION STATE ---
-@st.cache_resource
-def get_client():
-    return genai.Client(api_key=api_key)
+# --- SIDEBAR: CONFIGURATION ---
+with st.sidebar:
+    st.header("🔑 API Configuration")
+    st.info("Keys are pulled from Streamlit Secrets or entered below.")
+    
+    # Use Secrets if available, otherwise manual input
+    gemini_key = st.text_input("Gemini API Key (Required)", 
+                              value=st.secrets.get("GEMINI_API_KEY", ""), type="password")
+    
+    with st.expander("Optional News API Keys"):
+        mediastack_key = st.text_input("MediaStack Key", value=st.secrets.get("MEDIASTACK_KEY", ""), type="password")
+        gnews_key = st.text_input("GNews Key", value=st.secrets.get("GNEWS_KEY", ""), type="password")
+        newsapi_key = st.text_input("NewsAPI.org Key", value=st.secrets.get("NEWSAPI_KEY", ""), type="password")
 
-client = get_client()
+    st.header("⚙️ Generation Settings")
+    time_range = st.selectbox("News Time Range", ["day", "week", "month"])
+    fetch_depth = st.radio("Article Fetch Depth", ["Light (Titles)", "Deep (Full Content)"], index=0)
+    max_words = st.slider("Max Words in Domain", 1, 4, 2)
+    tld = st.selectbox("Top-Level Domain (TLD)", ["com", "ai", "io", "co", "net", "org"])
+    num_domains = st.number_input("Number of Domains", 1, 20, 10)
 
-# Initialize Chat History (This is how it remembers what you said)
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- HELPER FUNCTIONS ---
 
-# --- 3. MODEL SELECTION ---
-# Fast and powerful for 2026
-model_id = "gemini-2.0-flash" 
-
-# --- 4. DISPLAY CHAT HISTORY ---
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# --- 5. CHAT INPUT ---
-if prompt := st.chat_input("Ask me anything..."):
-    # Add user message to UI
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # Generate Response
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        message_placeholder.markdown("🔍 *Thinking and searching the web...*")
-        
+def fetch_trending_news():
+    """Fetches news from various sources based on provided keys."""
+    headlines = []
+    
+    # Example: GNews Fetching
+    if gnews_key:
         try:
-            # Send message to Gemini with Google Search Grounding
-            response = client.models.generate_content(
-                model=model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction="You are a professional AI assistant in 2026. Use formatting and clear sections.",
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0.7,
-                )
-            )
+            url = f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gnews_key}"
+            response = requests.get(url).json()
+            for article in response.get('articles', []):
+                headlines.append(f"{article['title']}: {article['description']}")
+        except:
+            pass
             
-            full_response = response.text
-            message_placeholder.markdown(full_response)
+    # Fallback/Default: If no news keys, Gemini can use its built-in Google Search tool
+    return headlines
+
+def generate_domains(news_context, client):
+    """Uses Gemini to generate domain ideas based on news."""
+    
+    prompt = f"""
+    Based on these trending news stories:
+    {news_context}
+    
+    Generate {num_domains} creative and brandable domain names ending in .{tld}.
+    Constraints:
+    - Maximum {max_words} words per domain.
+    - Focus on high-value, trending topics from the news.
+    - Provide a short reasoning for each.
+    
+    Return the result as a table format.
+    """
+    
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a domain name expert and brand strategist.",
+            tools=[types.Tool(google_search=types.GoogleSearch())] if not news_context else None
+        )
+    )
+    return response.text
+
+# --- MAIN LOGIC ---
+if st.button("Generate Domains ✨"):
+    if not gemini_key:
+        st.error("Please provide a Gemini API Key in the sidebar.")
+    else:
+        try:
+            client = genai.Client(api_key=gemini_key)
             
-            # Show Grounding (Google Search Sources)
-            if response.candidates[0].grounding_metadata:
-                with st.expander("🌐 View Web Sources"):
-                    st.write("Information verified by Google Search live.")
-
-            # Save to history
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
-
+            with st.spinner("Scanning news and brainstorming domains..."):
+                # 1. Get News
+                news = fetch_trending_news()
+                context = "\n".join(news) if news else "Use your internal Google Search tool to find today's top tech and business news."
+                
+                # 2. Generate with AI
+                result_raw = generate_domains(context, client)
+                
+                # 3. Display Results
+                st.success("Analysis Complete!")
+                st.markdown(result_raw)
+                
+                # 4. Availability Check Helper
+                st.info("💡 Note: Availability check is manual. Copy your favorite domain and check on Namecheap or GoDaddy.")
+                
         except Exception as e:
-            st.error(f"API Error: {e}")
+            st.error(f"An error occurred: {e}")
+
+footer = """<div style='text-align: center; padding: 20px;'>Made with ❤️ by Youness KASMI</div>"""
+st.markdown(footer, unsafe_allow_html=True)
