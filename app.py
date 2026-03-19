@@ -4,26 +4,27 @@ import re
 import whois
 import socket
 import trafilatura
+import random
 import pandas as pd
 from collections import Counter
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="KASMI DEEP NEWS", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="KASMI DYNAMIC NEWS", page_icon="🔥", layout="wide")
 
 st.markdown("""
     <style>
     .main { background-color: #f0f2f6; }
-    .stButton>button { background-color: #003366; color: white; border-radius: 8px; font-weight: bold; height: 3.5em; width: 100%; }
+    .stButton>button { background-color: #e63946; color: white; border-radius: 8px; font-weight: bold; height: 3.5em; width: 100%; }
     .available-card { 
-        background-color: white; padding: 20px; border-radius: 12px; border-left: 10px solid #1e88e5;
+        background-color: white; padding: 20px; border-radius: 12px; border-left: 10px solid #e63946;
         box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 20px;
     }
-    .keyword-pill { background: #e3f2fd; color: #0d47a1; padding: 4px 12px; border-radius: 20px; font-size: 0.8em; margin: 2px; display: inline-block; }
+    .keyword-pill { background: #f1faee; color: #1d3557; padding: 4px 12px; border-radius: 20px; font-size: 0.8em; margin: 2px; display: inline-block; border: 1px solid #a8dadc; }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🧠 KASMI DEEP DOMAIN NEWS")
-st.write("Aggregating 4 News APIs + Scraping Article Content for Niche Domain Discovery.")
+st.title("🔥 KASMI DYNAMIC DOMAIN NEWS")
+st.write("Randomized Deep-Scraping Engine: Every run is unique.")
 
 # --- SIDEBAR: CONFIG ---
 with st.sidebar:
@@ -34,138 +35,156 @@ with st.sidebar:
     curr_key = st.text_input("Currents Key", value=st.secrets.get("CURRENTS_KEY", ""), type="password")
 
     st.divider()
-    st.header("⚙️ Deep Scrape Settings")
-    scrape_limit = st.slider("Articles to Scrape Deeply", 3, 10, 5, help="More articles = slower performance.")
+    st.header("🎯 Targeting")
+    user_topic = st.text_input("Custom Topic (Leave blank for random)", "")
     tld = st.selectbox("TLD", ["com", "ai", "io", "net", "org", "co"])
-    max_domains = st.slider("Max Availability Checks", 5, 15, 8)
+    
+    st.header("⚙️ Engine")
+    scrape_limit = st.slider("Articles to Scrape", 3, 10, 5)
+    max_checks = st.slider("Availability Checks", 5, 20, 10)
+
+# --- NICHES FOR RANDOMIZATION ---
+NICHES = [
+    "Artificial Intelligence", "SaaS Business", "Green Energy", "Quantum Computing",
+    "Space Exploration", "Cybersecurity", "Electric Vehicles", "Biohacking", 
+    "Remote Work Tools", "Metaverse", "Robotics", "Fintech", "HealthTech", 
+    "E-commerce Trends", "Gaming Hardware", "Web3", "Climate Change Solutions"
+]
 
 # --- NEWS & DEEP SCRAPING LOGIC ---
-def fetch_news_urls():
-    """Fetches titles and URLs from all 4 sources."""
-    articles = [] # List of dicts: {'title': ..., 'url': ...}
+def fetch_news_urls(query):
+    """Fetches titles and URLs using specific queries to ensure fresh results."""
+    articles = []
     
-    # 1. GNews
+    # Randomize the page to get different results from the same query
+    random_page = random.randint(1, 3)
+
+    # 1. GNews (Using /search instead of /top-headlines for more variety)
     if gn_key:
         try:
-            r = requests.get(f"https://gnews.io/api/v4/top-headlines?category=technology&lang=en&apikey={gn_key}", timeout=5).json()
+            url = f"https://gnews.io/api/v4/search?q={query}&lang=en&max=10&apikey={gn_key}"
+            r = requests.get(url, timeout=5).json()
             for a in r.get('articles', []): articles.append({'title': a['title'], 'url': a['url']})
         except: pass
-    # 2. NewsAPI
+    
+    # 2. NewsAPI (Using /everything for deeper archives)
     if napi_key:
         try:
-            r = requests.get(f"https://newsapi.org/v2/top-headlines?category=technology&language=en&apiKey={napi_key}", timeout=5).json()
+            url = f"https://newsapi.org/v2/everything?q={query}&language=en&pageSize=10&sortBy=publishedAt&apiKey={napi_key}"
+            r = requests.get(url, timeout=5).json()
             for a in r.get('articles', []): articles.append({'title': a['title'], 'url': a['url']})
         except: pass
+
     # 3. MediaStack
     if m_key:
         try:
-            r = requests.get(f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en&limit=10", timeout=5).json()
+            url = f"http://api.mediastack.com/v1/news?access_key={m_key}&languages=en&keywords={query}&limit=10"
+            r = requests.get(url, timeout=5).json()
             for a in r.get('data', []): articles.append({'title': a['title'], 'url': a['url']})
         except: pass
-    # 4. Currents
-    if curr_key:
-        try:
-            headers = {'Authorization': curr_key}
-            r = requests.get("https://api.currentsapi.services/v1/latest-news?language=en&category=technology", headers=headers, timeout=5).json()
-            for a in r.get('news', []): articles.append({'title': a['title'], 'url': a['url']})
-        except: pass
-    
+
     return articles
 
 def scrape_article_content(url):
-    """Visits a URL and extracts the main text content."""
     try:
         downloaded = trafilatura.fetch_url(url)
         return trafilatura.extract(downloaded)
-    except:
-        return ""
+    except: return ""
 
 # --- AVAILABILITY LOGIC (WHOIS) ---
 def is_available(domain):
     try:
-        # Check DNS first (Fast)
         socket.gethostbyname(domain)
         return False
     except:
         try:
-            # Check WHOIS (Accurate)
             w = whois.whois(domain)
             return not w.registrar and not w.creation_date
-        except:
-            return True
+        except: return True
 
 # --- KEYWORD ENGINE ---
 def extract_deep_keywords(text):
-    words = re.findall(r'\b[a-z]{5,12}\b', text.lower()) # Focus on 5-12 letter words
-    stop_words = {'today', 'latest', 'news', 'people', 'would', 'could', 'should', 'about', 'their', 'there'}
+    words = re.findall(r'\b[a-z]{5,12}\b', text.lower())
+    stop_words = {'today', 'latest', 'news', 'people', 'would', 'could', 'should', 'about', 'their', 'business', 'technology'}
     filtered = [w for w in words if w not in stop_words]
-    return [item[0] for item in Counter(filtered).most_common(20)]
+    return [item[0] for item in Counter(filtered).most_common(25)]
 
 # --- MAIN APP ---
-if st.button("🔍 START DEEP ANALYTICS & FIND DOMAINS"):
+if st.button("🚀 EXECUTE DYNAMIC DEEP SCAN"):
+    # 1. Pick a Topic
+    target_topic = user_topic if user_topic else random.choice(NICHES)
+    
     if not any([gn_key, napi_key, m_key, curr_key]):
         st.error("Please add at least one News API Key.")
     else:
-        with st.status("Initializing Deep Scrape...", expanded=True) as status:
-            # Step 1: Get URLs
-            st.write("📡 Collecting headlines and article links...")
-            articles = fetch_news_urls()
+        with st.status(f"Scanning News for '{target_topic}'...", expanded=True) as status:
+            # 2. Fetch URLs
+            st.write(f"📡 Querying APIs for fresh news about: **{target_topic}**")
+            articles = fetch_news_urls(target_topic)
             
             if not articles:
-                st.error("No news found.")
+                st.error("No articles found for this topic. Try another keyword.")
             else:
-                # Step 2: Deep Scrape
-                st.write(f"📝 Deep-fetching content from top {scrape_limit} articles...")
+                # RANDOMIZE article order so every run uses different text
+                random.shuffle(articles)
+                
+                # 3. Deep Scrape
+                st.write(f"📝 Scraping content from {scrape_limit} random articles...")
                 combined_text = ""
                 for i, art in enumerate(articles[:scrape_limit]):
-                    st.write(f"  → Scraping: {art['title'][:50]}...")
+                    st.write(f"  → Processing: {art['title'][:60]}...")
                     content = scrape_article_content(art['url'])
                     combined_text += f" {art['title']} {content}"
                 
-                # Step 3: Extract Keywords
-                st.write("🧠 Analyzing text for high-value keywords...")
+                # 4. Extract Keywords
                 keywords = extract_deep_keywords(combined_text)
+                random.shuffle(keywords) # Mix up the order of domains generated
                 
-                # Step 4: Generate & Check
-                st.write(f"🔎 Verifying {max_domains} domains via WHOIS...")
+                # 5. Generate & Check
+                st.write(f"🔎 Verifying {max_checks} unique domain combinations...")
                 available_ones = []
                 
-                # Generate combinations
                 candidates = []
-                for i in range(len(keywords)):
+                for i in range(len(keywords) - 1):
+                    # Variety of patterns
                     candidates.append(f"{keywords[i]}.{tld}")
-                    if i < len(keywords) - 1:
-                        candidates.append(f"{keywords[i]}{keywords[i+1]}.{tld}")
+                    candidates.append(f"{keywords[i]}{keywords[i+1]}.{tld}")
+                    candidates.append(f"{keywords[i]}labs.{tld}")
                 
-                # Perform Check
-                for d in candidates[:max_domains]:
+                # Remove duplicates and shuffle candidates
+                candidates = list(set(candidates))
+                random.shuffle(candidates)
+                
+                for d in candidates[:max_checks]:
                     if is_available(d):
                         available_ones.append(d)
                 
-                status.update(label="Deep Analytics Complete!", state="complete")
+                status.update(label="Deep Scan Finished!", state="complete")
 
         # --- OUTPUT ---
-        st.write("### 🔥 Trending Keywords Found (Deep Scrape):")
-        kw_html = "".join([f"<span class='keyword-pill'>{k}</span>" for k in keywords[:10]])
+        st.write(f"### 🧪 Industry Keywords Found in '{target_topic}':")
+        kw_html = "".join([f"<span class='keyword-pill'>{k}</span>" for k in keywords[:12]])
         st.markdown(kw_html, unsafe_allow_html=True)
 
         st.divider()
 
         if available_ones:
             st.success(f"💎 Found {len(available_ones)} Available Domains!")
-            for d in available_ones:
-                st.markdown(f"""
-                <div class="available-card">
-                    <span style="font-size: 22px; color: #1e88e5; font-weight: bold;">{d}</span><br>
-                    <small>✅ Status: UNREGISTERED</small><br><br>
-                    <a href="https://www.namecheap.com/domains/registration-results/?domain={d}" target="_blank" 
-                       style="background: #1e88e5; color: white; padding: 8px 15px; text-decoration: none; border-radius: 5px;">
-                       Register on Namecheap →
-                    </a>
-                </div>
-                """, unsafe_allow_html=True)
+            cols = st.columns(2)
+            for idx, d in enumerate(available_ones):
+                with cols[idx % 2]:
+                    st.markdown(f"""
+                    <div class="available-card">
+                        <span style="font-size: 20px; color: #e63946; font-weight: bold;">{d}</span><br>
+                        <small>✅ Status: AVAILABLE</small><br><br>
+                        <a href="https://www.namecheap.com/domains/registration-results/?domain={d}" target="_blank" 
+                           style="background: #e63946; color: white; padding: 8px 15px; text-decoration: none; border-radius: 5px; font-size: 0.8em;">
+                           Register Now →
+                        </a>
+                    </div>
+                    """, unsafe_allow_html=True)
         else:
-            st.warning("All trending domains found in this cycle are already taken. Try changing the TLD in the sidebar.")
+            st.warning("No available domains found this time. Try clicking 'Execute' again to scrape different articles!")
 
 st.divider()
-st.caption("KASMI DEEP NEWS 2026 | Powered by Trafilatura & WHOIS Protocols")
+st.caption("KASMI DYNAMIC NEWS | Randomization Engine Active | WHOIS Verification")
