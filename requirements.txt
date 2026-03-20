@@ -1,5 +1,3 @@
 streamlit
-requests
+apify-client
 pandas
-python-whois
-trafilatura
