@@ -1,3 +1,4 @@
 streamlit
-apify-client
+cloudscraper
+beautifulsoup4
 pandas
