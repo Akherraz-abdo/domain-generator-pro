@@ -1,81 +1,75 @@
 import streamlit as st
 import pandas as pd
-import zipfile
-import requests
-import io
+import subprocess
+import os
 
-st.set_page_config(page_title="Domain Hunter Pro", layout="wide")
+# --- Step 1: Initialize Playwright ---
+# This must run before we try to use Playwright
+def ensure_playwright_browsers():
+    try:
+        # Check if chromium is already there
+        import playwright
+        # We try to install only if necessary to save time/memory
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        st.error(f"Browser installation failed: {e}")
 
-st.title("🎯 Domain Hunter Pro")
-st.subheader("Official GoDaddy Expired Inventory Search")
+if 'browser_ready' not in st.session_state:
+    with st.spinner("Setting up browser engine..."):
+        ensure_playwright_browsers()
+        st.session_state['browser_ready'] = True
 
-# 1. Provide the Link to the Data
-st.info("Step 1: Go to [GoDaddy Inventory](https://www.godaddy.com/auctions/container/inventory-files) and download the 'Expired Auctions (all_expiry.csv.zip)' file.")
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 
-# 2. File Uploader
-uploaded_file = st.file_uploader("Step 2: Upload the 'all_expiry.csv.zip' file here", type=["zip"])
+# --- Step 2: The UI ---
+st.title("🔍 Expired Domain Finder")
 
-if uploaded_file is not None:
-    with st.spinner("Processing thousands of domains..."):
-        # Unzip and Read the CSV
-        with zipfile.ZipFile(uploaded_file) as z:
-            # Get the name of the csv file inside the zip
-            csv_name = z.namelist()[0]
-            with z.open(csv_name) as f:
-                # Read CSV (GoDaddy files are large, we use low_memory=False)
-                df = pd.DataFrame()
-                # We only need specific columns to save memory
-                cols_to_use = ['domainName', 'bidCount', 'currentPrice', 'auctionEndTime', 'valuation']
-                
-                try:
-                    df = pd.read_csv(f, use_cols=lambda c: c in cols_to_use if cols_to_use else True)
-                except:
-                    # Fallback if columns are named differently
-                    df = pd.read_csv(f)
+ed_user = st.sidebar.text_input("Username")
+ed_pass = st.sidebar.text_input("Password", type="password")
+query = st.text_input("Keyword Search")
 
-        # UI Filters
-        st.divider()
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            keyword = st.text_input("Search Keyword", placeholder="e.g. tech, crypto, coffee")
-        with col2:
-            max_price = st.number_input("Max Price ($)", value=1000)
-        with col3:
-            min_val = st.number_input("Min Valuation ($)", value=0)
+def scrape(user, password, q):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0")
+        page = context.new_page()
+        stealth_sync(page)
 
-        # Filtering Logic
-        if keyword:
-            filtered_df = df[df['domainName'].str.contains(keyword, case=False, na=False)]
-        else:
-            filtered_df = df
+        try:
+            # Login
+            page.goto("https://www.expireddomains.net/login/")
+            page.fill('input[name="login"]', user)
+            page.fill('input[name="password"]', password)
+            page.click('button[type="submit"]')
+            page.wait_for_timeout(3000)
 
-        if 'currentPrice' in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df['currentPrice'] <= max_price]
-        
-        if 'valuation' in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df['valuation'] >= min_val]
+            # Search
+            page.goto(f"https://www.expireddomains.net/domain-name-search/?q={q}")
+            
+            if page.locator("table.base1").is_visible():
+                rows = page.locator("table.base1 tr").all()
+                data = []
+                for row in rows[1:21]: # Get top 20
+                    cols = row.locator("td").all_inner_texts()
+                    if len(cols) > 5:
+                        data.append({"Domain": cols[0], "Backlinks": cols[1], "Status": cols[-1]})
+                browser.close()
+                return data
+            else:
+                browser.close()
+                return "Blocked or No Results"
+        except Exception as e:
+            browser.close()
+            return str(e)
 
-        # Results
-        st.success(f"Found {len(filtered_df)} domains matching your criteria.")
-        
-        # Sort by best value
-        if 'valuation' in filtered_df.columns:
-            filtered_df = filtered_df.sort_values(by='valuation', ascending=False)
-
-        st.dataframe(filtered_df, use_container_width=True)
-
-        # Download button for filtered results
-        csv = filtered_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download My List", csv, "my_domains.csv", "text/csv")
-else:
-    st.warning("Waiting for you to upload the GoDaddy Inventory Zip file.")
-
-st.markdown("""
----
-**Why this works:**  
-This app doesn't 'scrape' - it processes raw inventory data.  
-1. **No Bans:** You won't get blocked by Cloudflare.  
-2. **More Data:** You get the full GoDaddy list (usually 100,000+ domains).  
-3. **Speed:** It's much faster than waiting for a scraper to click through pages.
-""")
+if st.button("Run Search"):
+    if not ed_user or not ed_pass:
+        st.warning("Enter login info.")
+    else:
+        with st.spinner("Searching..."):
+            res = scrape(ed_user, ed_pass, query)
+            if isinstance(res, list):
+                st.table(res)
+            else:
+                st.error(f"Result: {res}")
