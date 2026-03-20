@@ -1,90 +1,88 @@
 import streamlit as st
-import cloudscraper
-from bs4 import BeautifulSoup
 import pandas as pd
+from playwright.sync_api import sync_playwright
+from playwright_stealth import stealth_sync
 import time
 
-# --- Page Config ---
-st.set_page_config(page_title="Free Expired Domain Finder", layout="wide")
-st.title("🔍 Free Expired Domain Search")
+st.set_page_config(page_title="Free Expired Domain Scraper", layout="wide")
+st.title("🔍 Advanced Expired Domain Finder")
 
-# --- Sidebar: Credentials ---
+# --- Sidebar ---
 st.sidebar.header("Login Credentials")
-st.sidebar.info("You must use your expireddomains.net login to see detailed data.")
 ed_user = st.sidebar.text_input("Username")
 ed_pass = st.sidebar.text_input("Password", type="password")
 
-# --- Function to Scrape ---
-def get_domains(user, password, query):
-    # Create a scraper that bypasses Cloudflare
-    scraper = cloudscraper.create_scraper()
-    
-    # 1. Login Logic
-    login_url = "https://www.expireddomains.net/login/"
-    login_data = {
-        'login': user,
-        'password': password,
-        'redirect': '/backorder-expired-domains/'
-    }
-    
-    # We use a session to keep the login cookies
-    response = scraper.post(login_url, data=login_data)
-    
-    if "Login failed" in response.text:
-        return "error_login"
+def scrape_expired_domains(user, password, query):
+    with sync_playwright() as p:
+        # Launch browser in headless mode
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        
+        # Apply stealth to bypass Cloudflare
+        stealth_sync(page)
 
-    # 2. Search Logic
-    # We search the 'Expired Domains' section with a keyword
-    search_url = f"https://www.expireddomains.net/domain-name-search/?q={query}"
-    response = scraper.get(search_url)
-    
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    # 3. Parse Table
-    table = soup.find('table', class_='base1')
-    if not table:
-        return "no_results"
-
-    domains = []
-    rows = table.find_all('tr')[1:]  # Skip header
-    
-    for row in rows:
-        cols = row.find_all('td')
-        if len(cols) > 1:
-            domains.append({
-                "Domain": cols[0].text.strip(),
-                "BL": cols[1].text.strip(), # Backlinks
-                "DP": cols[2].text.strip(), # Domain Pop
-                "AB": cols[3].text.strip(), # Birth year
-                "Status": cols[-1].text.strip()
-            })
+        try:
+            # 1. Login
+            st.info("Logging in...")
+            page.goto("https://www.expireddomains.net/login/", wait_until="networkidle")
+            page.fill('input[name="login"]', user)
+            page.fill('input[name="password"]', password)
+            page.click('button[type="submit"]')
             
-    return domains
-
-# --- UI ---
-search_query = st.text_input("Enter Keyword (e.g. 'coffee')", value="")
-
-if st.button("Find Domains"):
-    if not ed_user or not ed_pass:
-        st.warning("Please enter your ExpiredDomains.net username and password in the sidebar.")
-    elif not search_query:
-        st.warning("Please enter a keyword.")
-    else:
-        with st.spinner("Bypassing Cloudflare and fetching data..."):
-            results = get_domains(ed_user, ed_pass, search_query)
+            # Wait to see if login was successful
+            page.wait_for_timeout(3000)
             
-            if results == "error_login":
-                st.error("Login failed. Check your username/password.")
-            elif results == "no_results":
-                st.warning("No domains found or site structure changed.")
-            elif isinstance(results, list):
-                df = pd.DataFrame(results)
-                st.success(f"Found {len(df)} domains!")
-                st.dataframe(df, use_container_width=True)
+            # 2. Search
+            st.info(f"Searching for '{query}'...")
+            search_url = f"https://www.expireddomains.net/domain-name-search/?q={query}"
+            page.goto(search_url, wait_until="networkidle")
+            
+            # 3. Parse Table
+            # Look for the table with class 'base1'
+            if page.locator("table.base1").is_visible():
+                rows = page.locator("table.base1 tr").all()
+                data = []
                 
-                # Download
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download CSV", csv, "domains.csv", "text/csv")
+                # Headers are in the first row
+                for row in rows[1:]:  # Skip header
+                    cols = row.locator("td").all_inner_texts()
+                    if len(cols) > 5:
+                        data.append({
+                            "Domain": cols[0],
+                            "Backlinks": cols[1],
+                            "Birth": cols[3],
+                            "Status": cols[-1]
+                        })
+                
+                browser.close()
+                return data
+            else:
+                browser.close()
+                return "No Table Found"
+                
+        except Exception as e:
+            browser.close()
+            return f"Error: {str(e)}"
 
-st.markdown("---")
-st.caption("Note: This tool uses `cloudscraper` to access data freely. If it stops working, the website has likely updated its security.")
+# --- UI Logic ---
+query = st.text_input("Keyword", placeholder="e.g. crypto")
+
+if st.button("Start Scraping"):
+    if not ed_user or not ed_pass:
+        st.error("Please provide credentials.")
+    else:
+        with st.spinner("Bypassing Cloudflare (this may take 15-30 seconds)..."):
+            results = scrape_expired_domains(ed_user, ed_pass, query)
+            
+            if isinstance(results, list):
+                st.success(f"Success! Found {len(results)} domains.")
+                df = pd.DataFrame(results)
+                st.dataframe(df, use_container_width=True)
+                st.download_button("Download CSV", df.to_csv(index=False), "domains.csv")
+            else:
+                st.error(f"Failed: {results}")
+
+st.info("💡 Tip: If it fails, try logging into ExpiredDomains.net in your own browser first to ensure your account isn't locked.")
