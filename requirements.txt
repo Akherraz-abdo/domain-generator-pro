@@ -1,4 +1,4 @@
 streamlit
-cloudscraper
-beautifulsoup4
+playwright
+playwright-stealth
 pandas
